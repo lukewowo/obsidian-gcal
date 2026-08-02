@@ -468,7 +468,7 @@ export class MeetingNotes {
 			if (templater?.overwrite_file_commands) await templater.overwrite_file_commands(file);
 		}
 
-		await this.app.fileManager.processFrontMatter(file, (frontmatter) => {
+		await this.app.fileManager.processFrontMatter(file, (frontmatter: Record<string, unknown>) => {
 			frontmatter[EVENT_ID_KEY] = event.id;
 			// Only fill the rest when there is no template; a template's own
 			// frontmatter is the user's business.
@@ -515,7 +515,7 @@ export class MeetingNotes {
 		// Templater can only see the event through `lastEvent` (see the README), so
 		// stamping the id here is what makes the note findable next time.
 		if (file instanceof TFile) {
-			await this.app.fileManager.processFrontMatter(file, (frontmatter) => {
+			await this.app.fileManager.processFrontMatter(file, (frontmatter: Record<string, unknown>) => {
 				frontmatter[EVENT_ID_KEY] = event.id;
 			});
 		}

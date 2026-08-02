@@ -617,7 +617,11 @@ class GCalSettingTab extends PluginSettingTab {
 				await write(clamp(parsed));
 			});
 
-			text.inputEl.addEventListener("blur", () => text.setValue(String(read())));
+			// Block body so the handler returns void; an expression body returns the
+			// component, which trips no-misused-promises where types resolve loosely.
+			text.inputEl.addEventListener("blur", () => {
+				text.setValue(String(read()));
+			});
 		});
 	}
 

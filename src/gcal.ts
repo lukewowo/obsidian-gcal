@@ -163,8 +163,9 @@ export class GCalClient {
 		if (response.status >= 400) {
 			let detail = response.text;
 			try {
-				const body = response.json as { error?: { message?: string } };
-				detail = body?.error?.message ?? detail;
+				const body: unknown = response.json;
+				const message = (body as { error?: { message?: unknown } } | null)?.error?.message;
+				if (typeof message === "string") detail = message;
 			} catch {
 				/* Keep the raw body. */
 			}
@@ -174,7 +175,9 @@ export class GCalClient {
 			throw new GCalError(`Google Calendar API error ${response.status}: ${detail}`);
 		}
 
-		return (response.json ?? {}) as Record<string, unknown>;
+		// `json` is typed `any`; narrow once so callers work with `unknown` values.
+		const body: unknown = response.json;
+		return body && typeof body === "object" ? (body as Record<string, unknown>) : {};
 	}
 
 	async listCalendars(): Promise<CalendarInfo[]> {

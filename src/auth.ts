@@ -1,7 +1,36 @@
 import { requestUrl } from "obsidian";
-import { createServer, type IncomingMessage, type Server, type ServerResponse } from "http";
-import { createHash, randomBytes } from "crypto";
-import type { AddressInfo } from "net";
+import { createServer } from "http";
+
+// Node's own types are deliberately not imported. Lint and build environments
+// that lack @types/node degrade every `http` value to `any`, which cascades
+// through this file. Declaring the handful of members we touch keeps the code
+// typed regardless of whether those types resolve.
+
+interface LoopbackAddress {
+	port: number;
+}
+
+interface LoopbackRequest {
+	url?: string;
+}
+
+interface LoopbackResponse {
+	writeHead(status: number, headers?: Record<string, string>): LoopbackResponse;
+	end(body?: string): void;
+}
+
+interface LoopbackServer {
+	address(): LoopbackAddress | string | null;
+	listen(port: number, host: string, onListening: () => void): void;
+	close(): void;
+	/** Node 18.2+. Optional so an older runtime simply skips it. */
+	closeAllConnections?(): void;
+	on(event: "error", handler: (error: { message: string }) => void): void;
+}
+
+const createLoopbackServer = createServer as unknown as (
+	handler: (req: LoopbackRequest, res: LoopbackResponse) => void
+) => LoopbackServer;
 
 const AUTH_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth";
 const TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token";
@@ -29,8 +58,24 @@ export interface AuthConfig {
 
 export class AuthError extends Error {}
 
-function base64url(input: Buffer): string {
-	return input.toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+// Web Crypto rather than Node's `crypto`: it is typed by lib.dom, available in
+// Obsidian's renderer, and keeps this file free of another untyped Node import.
+
+function base64url(bytes: Uint8Array): string {
+	let binary = "";
+	for (const byte of bytes) binary += String.fromCharCode(byte);
+	return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+function randomBytes(length: number): Uint8Array {
+	const bytes = new Uint8Array(length);
+	crypto.getRandomValues(bytes);
+	return bytes;
+}
+
+async function sha256(text: string): Promise<Uint8Array> {
+	const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+	return new Uint8Array(digest);
 }
 
 function responsePage(title: string, message: string): string {
@@ -58,13 +103,13 @@ function awaitConsent(config: AuthConfig, codeChallenge: string): Promise<Consen
 	return new Promise<ConsentResult>((resolve, reject) => {
 		const state = base64url(randomBytes(16));
 		let settled = false;
-		let timer: ReturnType<typeof setTimeout> | undefined;
-		let server: Server;
+		let timer: number | undefined;
+		let server: LoopbackServer;
 
 		const finish = (fn: () => void) => {
 			if (settled) return;
 			settled = true;
-			if (timer) clearTimeout(timer);
+			if (timer !== undefined) window.clearTimeout(timer);
 			// The browser holds the socket open with keep-alive, which would otherwise
 			// keep the port bound long after we are done with it.
 			server.closeAllConnections?.();
@@ -72,9 +117,9 @@ function awaitConsent(config: AuthConfig, codeChallenge: string): Promise<Consen
 			fn();
 		};
 
-		const handler = (req: IncomingMessage, res: ServerResponse) => {
-			const address = server.address() as AddressInfo | null;
-			const port = address?.port ?? config.port;
+		const handler = (req: LoopbackRequest, res: LoopbackResponse) => {
+			const address = server.address();
+			const port = typeof address === "object" && address !== null ? address.port : config.port;
 			const url = new URL(req.url ?? "/", `http://127.0.0.1:${port}`);
 
 			const code = url.searchParams.get("code");
@@ -98,16 +143,22 @@ function awaitConsent(config: AuthConfig, codeChallenge: string): Promise<Consen
 				return;
 			}
 
+			if (!code) {
+				res.end(responsePage("Authorization failed", "Google did not return an authorization code."));
+				finish(() => reject(new AuthError("Google did not return an authorization code")));
+				return;
+			}
+
 			res.end(responsePage("Connected", "Obsidian is now linked to your Google Calendar. You can close this tab."));
-			finish(() => resolve({ code: code as string, redirectUri: `http://127.0.0.1:${port}` }));
+			finish(() => resolve({ code, redirectUri: `http://127.0.0.1:${port}` }));
 		};
 
-		server = createServer(handler);
+		server = createLoopbackServer(handler);
 		server.on("error", (err) => finish(() => reject(new AuthError(`Could not start the local listener: ${err.message}`))));
 
 		server.listen(config.port, "127.0.0.1", () => {
-			const address = server.address() as AddressInfo | null;
-			if (!address) {
+			const address = server.address();
+			if (typeof address !== "object" || address === null) {
 				finish(() => reject(new AuthError("Could not determine the local listener port")));
 				return;
 			}
@@ -126,12 +177,16 @@ function awaitConsent(config: AuthConfig, codeChallenge: string): Promise<Consen
 			});
 			window.open(`${AUTH_ENDPOINT}?${params.toString()}`, "_blank");
 
-			timer = setTimeout(
+			timer = window.setTimeout(
 				() => finish(() => reject(new AuthError("Timed out waiting for the Google consent screen"))),
 				CONSENT_TIMEOUT_MS
 			);
 		});
 	});
+}
+
+function asString(value: unknown): string | undefined {
+	return typeof value === "string" ? value : undefined;
 }
 
 async function postForm(url: string, form: Record<string, string>): Promise<Record<string, unknown>> {
@@ -143,15 +198,18 @@ async function postForm(url: string, form: Record<string, string>): Promise<Reco
 		throw: false,
 	});
 
+	// `RequestUrlResponse.json` is typed `any`; narrow it once here so nothing
+	// downstream inherits that.
 	let payload: Record<string, unknown> = {};
 	try {
-		payload = response.json ?? {};
+		const parsed: unknown = response.json;
+		if (parsed && typeof parsed === "object") payload = parsed as Record<string, unknown>;
 	} catch {
 		/* Non-JSON error bodies fall through to the status check below. */
 	}
 
 	if (response.status >= 400) {
-		const detail = (payload["error_description"] as string) ?? (payload["error"] as string) ?? response.text;
+		const detail = asString(payload["error_description"]) ?? asString(payload["error"]) ?? response.text;
 		throw new AuthError(`Google rejected the token request (${response.status}): ${detail}`);
 	}
 	return payload;
@@ -168,7 +226,7 @@ export async function authorize(config: AuthConfig): Promise<OAuthTokens> {
 	}
 
 	const verifier = base64url(randomBytes(32));
-	const challenge = base64url(createHash("sha256").update(verifier).digest());
+	const challenge = base64url(await sha256(verifier));
 	const { code, redirectUri } = await awaitConsent(config, challenge);
 
 	const payload = await postForm(TOKEN_ENDPOINT, {
@@ -180,7 +238,7 @@ export async function authorize(config: AuthConfig): Promise<OAuthTokens> {
 		code_verifier: verifier,
 	});
 
-	const refreshToken = payload["refresh_token"] as string | undefined;
+	const refreshToken = asString(payload["refresh_token"]);
 	if (!refreshToken) {
 		throw new AuthError(
 			"Google did not return a refresh token. Revoke this app's access at myaccount.google.com/permissions and connect again."
@@ -188,7 +246,7 @@ export async function authorize(config: AuthConfig): Promise<OAuthTokens> {
 	}
 
 	return {
-		accessToken: payload["access_token"] as string,
+		accessToken: asString(payload["access_token"]) ?? "",
 		refreshToken,
 		expiresAt: Date.now() + Number(payload["expires_in"] ?? 3600) * 1000,
 	};
@@ -247,11 +305,11 @@ export class GoogleAuth {
 				grant_type: "refresh_token",
 			});
 
-			const accessToken = payload["access_token"] as string;
+			const accessToken = asString(payload["access_token"]) ?? "";
 			await this.onChange({
 				accessToken,
 				// Google only returns a new refresh token when it rotates one.
-				refreshToken: (payload["refresh_token"] as string) ?? tokens.refreshToken,
+				refreshToken: asString(payload["refresh_token"]) ?? tokens.refreshToken,
 				expiresAt: Date.now() + Number(payload["expires_in"] ?? 3600) * 1000,
 			});
 			return accessToken;

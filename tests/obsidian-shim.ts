@@ -1,15 +1,15 @@
 // Minimal stand-in for the parts of the `obsidian` module that the pure-logic
 // modules (dates.ts, query.ts) use, so they can run under plain node.
 //
-// `require` rather than `import`: both moment and js-yaml are CommonJS exports
-// of a callable value, and an ESM namespace import wraps them in an object.
+// `require` rather than `import`: moment is a CommonJS export of a callable
+// value, and an ESM namespace import wraps it in an object.
 
 export const moment = require("moment") as typeof import("moment");
 
-const yaml = require("js-yaml") as { load: (source: string) => unknown };
+const yaml = require("yaml") as { parse: (source: string) => unknown };
 
 export function parseYaml(source: string): unknown {
-	return yaml.load(source);
+	return yaml.parse(source);
 }
 
 export function requestUrl(): never {

@@ -1,6 +1,6 @@
 import esbuild from "esbuild";
 import process from "process";
-import builtins from "builtin-modules";
+import { builtinModules } from "module";
 
 const banner = `/*
 THIS IS A GENERATED FILE. Do not edit — change the sources under src/ and rebuild.
@@ -27,7 +27,9 @@ const context = await esbuild.context({
 		"@lezer/common",
 		"@lezer/highlight",
 		"@lezer/lr",
-		...builtins,
+		// Node built-ins stay external; Obsidian supplies them on desktop.
+		...builtinModules,
+		...builtinModules.map((m) => `node:${m}`),
 	],
 	format: "cjs",
 	target: "es2020",
