@@ -455,6 +455,12 @@ Obsidian to pick up changes.
 dependency. `tests/obsidian-shim.ts` stands in for the `obsidian` module so they run under node.
 The OAuth flow, API client and renderer need a live Obsidian window and are not covered.
 
+## Support
+
+This plugin is free and open source, and every feature is available to everyone — nothing is held
+back behind a payment. If it saves you time and you'd like to say thanks,
+[buy me a coffee](https://buymeacoffee.com/lukewowo). Entirely optional.
+
 ## Licence
 
 MIT
