@@ -13,6 +13,8 @@ show: attendees
 ```
 ````
 
+![An agenda block rendered in Obsidian: a "Tomorrow" heading with two all-day events, Home and Office, each showing links to open the event in Google Calendar and to create a meeting note](docs/agenda.png)
+
 Connect as many Google accounts as you like — personal and work side by side, or filtered apart
 per block.
 
