@@ -13,7 +13,6 @@ export class NoteError extends Error {}
 // and every call site treats them as possibly absent.
 
 interface TemplaterPlugin {
-	settings?: { templates_folder?: string };
 	templater?: {
 		create_new_note_from_template?: (
 			template: TFile | string,
@@ -38,10 +37,7 @@ interface QuickAddPlugin {
 	api?: {
 		executeChoice?: (choiceName: string, variables?: Record<string, unknown>) => Promise<void>;
 	};
-	settings?: {
-		choices?: QuickAddChoiceRaw[];
-		templateFolderPath?: string;
-	};
+	settings?: { choices?: QuickAddChoiceRaw[] };
 }
 
 function getPlugin<T>(app: App, id: string): T | null {
@@ -98,33 +94,6 @@ export function quickAddChoices(app: App): QuickAddChoiceInfo[] {
 	}
 
 	return found.sort((a, b) => a.label.localeCompare(b.label));
-}
-
-/**
- * Markdown files in whichever template folders the installed plugins are configured
- * with. Used to populate a picker; the path field stays editable for anything else.
- */
-export function templateCandidates(app: App): string[] {
-	const folders = new Set<string>();
-	const templater = getPlugin<TemplaterPlugin>(app, "templater-obsidian")?.settings?.templates_folder;
-	const quickadd = getPlugin<QuickAddPlugin>(app, "quickadd")?.settings?.templateFolderPath;
-	const core = (
-		app as unknown as {
-			internalPlugins?: { plugins?: Record<string, { instance?: { options?: { folder?: string } } }> };
-		}
-	).internalPlugins?.plugins?.templates?.instance?.options?.folder;
-
-	for (const folder of [templater, quickadd, core]) {
-		if (folder && folder.trim()) folders.add(normalizePath(folder.trim()));
-	}
-	if (folders.size === 0) return [];
-
-	const prefixes = [...folders].map((folder) => `${folder}/`);
-	return app.vault
-		.getMarkdownFiles()
-		.map((file) => file.path)
-		.filter((path) => prefixes.some((prefix) => path.startsWith(prefix)))
-		.sort((a, b) => a.localeCompare(b));
 }
 
 // --- Placeholders ---------------------------------------------------------

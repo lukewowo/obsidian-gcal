@@ -37,6 +37,15 @@ local loopback listener; once an account is connected, reading calendars works o
   [myaccount.google.com/permissions](https://myaccount.google.com/permissions) if it is ever exposed.
 - **File writes.** Only when you use the meeting-note feature, and only inside your vault, in the
   folder you configure.
+- **File listing.** The plugin lists the markdown files in your vault to build an index of which note
+  belongs to which event, read from an `event-id` property. It reads that one property and the file
+  path — never the body of a file it did not create. This is what lets the meeting-note link keep
+  working after you rename or move a note.
+- **Clipboard.** Written to only when you click a Copy action — Copy title, Copy location, or Copy
+  link in the sign-in dialog. The plugin never reads your clipboard.
+- **Verifying a release.** Release assets carry GitHub build provenance attestations, so you can
+  confirm they were built from this repository:
+  `gh attestation verify main.js --repo lukewowo/obsidian-gcal`.
 
 ---
 

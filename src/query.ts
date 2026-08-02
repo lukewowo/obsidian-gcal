@@ -1,5 +1,5 @@
 import { parseYaml } from "obsidian";
-import type { Moment } from "moment";
+import type { Moment } from "./moment-shim";
 import { addDuration, parseDuration, resolveDate } from "./dates";
 import type { GCalSettings } from "./settings";
 import type { AllDayMode, Field, GroupMode, ViewMode } from "./types";

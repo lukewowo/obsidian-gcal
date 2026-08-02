@@ -5,7 +5,6 @@ import {
 	Platform,
 	Plugin,
 	PluginSettingTab,
-	moment,
 	type MarkdownPostProcessorContext,
 	type Setting,
 	type SettingDefinition,
@@ -15,7 +14,7 @@ import {
 	type SettingDefinitionPage,
 	type TFile,
 } from "obsidian";
-import type { Moment } from "moment";
+import { moment, type Moment } from "./moment-shim";
 import {
 	AuthError,
 	GoogleAuth,
@@ -39,7 +38,6 @@ import {
 	MeetingNotes,
 	quickAddAvailable,
 	quickAddChoices,
-	templateCandidates,
 	templaterAvailable,
 } from "./notes";
 import {

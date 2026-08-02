@@ -1,4 +1,4 @@
-import type { Moment } from "moment";
+import type { Moment } from "./moment-shim";
 
 export type ViewMode = "agenda" | "list" | "table";
 

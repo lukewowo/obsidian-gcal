@@ -1,5 +1,5 @@
 import { Menu, Notice, setIcon } from "obsidian";
-import type { Moment } from "moment";
+import type { Moment } from "./moment-shim";
 import { dayHeading, formatDuration, formatTime, timeLabel as eventTimeLabel } from "./dates";
 import type { GCalQuery } from "./query";
 import type { CalEvent, Field } from "./types";

@@ -1,7 +1,7 @@
 {
 	"id": "google-calendar-agenda",
 	"name": "Google Calendar Agenda",
-	"version": "0.2.1",
+	"version": "0.2.2",
 	"minAppVersion": "1.13.0",
 	"description": "Query Google Calendar from a code block and render upcoming events as an agenda, list, or table.",
 	"author": "lukewowo",

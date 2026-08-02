@@ -1,5 +1,5 @@
-import { moment, requestUrl } from "obsidian";
-import type { Moment } from "moment";
+import { requestUrl } from "obsidian";
+import { moment, type Moment } from "./moment-shim";
 import { AuthError, type GoogleAuth } from "./auth";
 import { calendarKey } from "./settings";
 import type { Attendee, CalEvent, CalendarInfo } from "./types";

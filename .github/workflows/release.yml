@@ -9,6 +9,9 @@ on:
 
 permissions:
   contents: write
+  # Required to sign build provenance for the release assets.
+  id-token: write
+  attestations: write
 
 jobs:
   release:
@@ -34,6 +37,13 @@ jobs:
 
       - run: npm test
       - run: npm run build
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v1
+        with:
+          subject-path: |
+            main.js
+            styles.css
 
       - name: Publish the release
         env:

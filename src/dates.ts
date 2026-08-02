@@ -1,8 +1,5 @@
-import { moment } from "obsidian";
-import type { Moment, unitOfTime } from "moment";
+import { moment, type Moment, type MomentUnit } from "./moment-shim";
 import type { CalEvent } from "./types";
-
-type MomentUnit = unitOfTime.DurationConstructor;
 
 export type Edge = "start" | "end";
 

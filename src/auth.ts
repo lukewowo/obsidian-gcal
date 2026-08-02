@@ -28,18 +28,27 @@ interface LoopbackServer {
 }
 
 /**
- * Node's `http` is required lazily, not imported. A top-level import executes on
- * plugin load, which would throw on mobile where the module does not exist —
- * taking down the whole plugin, including the parts that work fine there.
+ * Node's `http` is loaded on demand behind a platform guard, never imported at the
+ * top level. A static import executes on plugin load and would throw on mobile,
+ * taking down the parts of the plugin that work there perfectly well.
  */
-function createLoopbackServer(handler: (req: LoopbackRequest, res: LoopbackResponse) => void): LoopbackServer {
+function loadCreateServer(): (handler: (req: LoopbackRequest, res: LoopbackResponse) => void) => LoopbackServer {
 	if (!Platform.isDesktopApp) {
 		throw new AuthError("Adding an account needs the desktop app; the sign-in flow uses a local listener.");
 	}
-	const http = require("http") as {
+
+	// Electron's require, reached through `window` rather than the bare global.
+	// A static import would run on load and break mobile; `import("http")` is
+	// resolved by Chromium against the app:// origin and never reaches Node.
+	const electronRequire = (window as unknown as { require?: (id: string) => unknown }).require;
+	if (!electronRequire) {
+		throw new AuthError("Node's http module is unavailable, so the sign-in listener cannot start.");
+	}
+
+	const http = electronRequire("http") as {
 		createServer: (h: (req: LoopbackRequest, res: LoopbackResponse) => void) => LoopbackServer;
 	};
-	return http.createServer(handler);
+	return http.createServer;
 }
 
 const AUTH_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth";
@@ -123,6 +132,8 @@ export interface ConsentUi {
  * `http://127.0.0.1:<port>` redirect, so the port does not need registering.
  */
 function awaitConsent(config: AuthConfig, codeChallenge: string, ui?: ConsentUi): Promise<ConsentResult> {
+	const createLoopbackServer = loadCreateServer();
+
 	return new Promise<ConsentResult>((resolve, reject) => {
 		const state = base64url(randomBytes(16));
 		let settled = false;

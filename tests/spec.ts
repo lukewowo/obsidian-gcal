@@ -1,4 +1,4 @@
-import { moment } from "obsidian";
+import { moment } from "../src/moment-shim";
 import { formatDuration, parseDuration, resolveDate } from "../src/dates";
 import {
 	compileTitlePattern,
@@ -16,7 +16,6 @@ import {
 	sanitiseFolder,
 	sanitiseSegment,
 	substitute,
-	templateCandidates,
 } from "../src/notes";
 import type { CalEvent } from "../src/types";
 
@@ -357,31 +356,6 @@ const dupes = quickAddChoices(
 );
 check("duplicates are flagged", dupes.every((c) => c.label.includes("duplicate")), true);
 check("duplicates are both listed", dupes.length, 2);
-
-const files = ["_Assets/Templates/Meeting.md", "_Assets/Templates/Daily.md", "Notes/Random.md", "90 Templates/Call.md"];
-// localeCompare groups each folder's files together; the exact folder order is
-// whatever collation says, which is fine for a picker.
-check(
-	"candidates come from configured folders only",
-	templateCandidates(fakeApp({ files, templaterFolder: "_Assets/Templates", quickAddTemplateFolder: "90 Templates" })),
-	["_Assets/Templates/Daily.md", "_Assets/Templates/Meeting.md", "90 Templates/Call.md"]
-);
-check(
-	"notes outside the template folders are excluded",
-	templateCandidates(fakeApp({ files, templaterFolder: "_Assets/Templates" })).includes("Notes/Random.md"),
-	false
-);
-check("no folders configured yields no candidates", templateCandidates(fakeApp({ files })), []);
-check(
-	"core templates folder is honoured",
-	templateCandidates(fakeApp({ files, coreFolder: "Notes" })),
-	["Notes/Random.md"]
-);
-check(
-	"a folder prefix does not match a sibling",
-	templateCandidates(fakeApp({ files: ["Templates2/x.md", "Templates/y.md"], templaterFolder: "Templates" })),
-	["Templates/y.md"]
-);
 
 // ---- settings validation ----
 check("period accepts a duration", isValidPeriod("7d"), true);
