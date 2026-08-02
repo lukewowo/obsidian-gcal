@@ -14,7 +14,10 @@ show: attendees
 ````
 
 Connect as many Google accounts as you like — personal and work side by side, or filtered apart
-per block. Desktop only: the OAuth flow needs a local loopback listener.
+per block.
+
+Requires Obsidian 1.13.0 or later. Signing in needs the desktop app, because the OAuth flow uses a
+local loopback listener; once an account is connected, reading calendars works on mobile too.
 
 ---
 
@@ -122,6 +125,33 @@ from: 2026-09-01   # a specific month
 to: 2026-09-30
 ```
 
+### Hiding noisy events
+
+Recurring “EOD”, “Start of Day” and similar blocks clutter an agenda. List the titles you never want
+to see in *Settings → Hidden events*, one per line, or per block with `hide-titles`. Three forms:
+
+| Pattern | Matches |
+| --- | --- |
+| `EOD` | that title exactly, ignoring case — not “Prep for EOD” |
+| `Start of *` | anything beginning “Start of ” |
+| `*EOD*` | anything containing “EOD” |
+| `/^(EOD|SOD)$/` | a regular expression, case-insensitive unless you add flags |
+
+`*` matches any run of characters and `?` matches exactly one. Everything else is literal, so
+`Standup (daily)` and `C++` match themselves rather than being read as regex.
+
+````markdown
+```gcal-events
+period: 7d
+hide-titles:
+  - EOD
+  - Start of *
+  - "*lunch*"
+```
+````
+
+A block's list adds to the one in settings rather than replacing it.
+
 ### Choosing events
 
 | Option | Default | Notes |
@@ -133,6 +163,7 @@ to: 2026-09-30
 | `search` | — | Google's full-text search across title, description, location and guests. |
 | `title-match` | — | Keep events whose title matches. Plain text is case-insensitive; `/regex/flags` also works. |
 | `title-exclude` | — | Drop events whose title matches. |
+| `hide-titles` | settings | List of title patterns to hide. Adds to the list in settings. |
 | `all-day` | `include` | `include`, `exclude`, or `only`. |
 | `declined` | `hide` (setting) | `show` to include events you declined. |
 | `cancelled` | `hide` | `show` to include cancelled events. |

@@ -21,6 +21,8 @@ export interface GCalQuery {
 	search?: string;
 	titleMatch?: RegExp;
 	titleExclude?: RegExp;
+	/** Compiled from the settings list plus the block's own `hide-titles`. */
+	hiddenTitles: RegExp[];
 	allDay: AllDayMode;
 	hideDeclined: boolean;
 	hideCancelled: boolean;
@@ -119,6 +121,10 @@ const KNOWN_KEYS = new Set([
 	"match",
 	"title-exclude",
 	"titleexclude",
+	"hide-titles",
+	"hidetitles",
+	"exclude-titles",
+	"excludetitles",
 	"all-day",
 	"allday",
 	"declined",
@@ -227,6 +233,45 @@ export function isValidPeriod(text: string): boolean {
 	return Boolean(parseDuration(trimmed) ?? resolveDate(trimmed, "end"));
 }
 
+/**
+ * Compiles one hide pattern.
+ *
+ * `/foo/i` is a regular expression. Anything else is a glob: `*` matches any run
+ * of characters and `?` matches one, anchored at both ends and case-insensitive.
+ * So `EOD` hides only an event called exactly that, `Start of *` hides anything
+ * beginning that way, and `*EOD*` hides anything containing it.
+ */
+export function compileTitlePattern(pattern: string): RegExp | null {
+	const text = pattern.trim();
+	if (!text) return null;
+
+	const delimited = /^\/(.*)\/([gimsuy]*)$/.exec(text);
+	if (delimited) {
+		try {
+			// `g` is dropped: a global regex carries lastIndex between .test() calls.
+			return new RegExp(delimited[1], delimited[2].replace(/g/g, "") || "i");
+		} catch {
+			return null;
+		}
+	}
+
+	const escaped = text
+		.replace(/[.+^${}()|[\]\\]/g, "\\$&")
+		.replace(/\*/g, ".*")
+		.replace(/\?/g, ".");
+	return new RegExp(`^${escaped}$`, "i");
+}
+
+export function compileTitlePatterns(patterns: string[], onInvalid?: (pattern: string) => void): RegExp[] {
+	const compiled: RegExp[] = [];
+	for (const pattern of patterns) {
+		const regex = compileTitlePattern(pattern);
+		if (regex) compiled.push(regex);
+		else if (pattern.trim()) onInvalid?.(pattern);
+	}
+	return compiled;
+}
+
 function requireDate(value: unknown, key: string, edge: "start" | "end"): Moment {
 	const resolved = resolveDate(String(value), edge);
 	if (!resolved) {
@@ -330,6 +375,12 @@ export function parseQuery(source: string, settings: GCalSettings): ParsedQuery 
 	const dateFormatRaw = get("date-format", "dateformat");
 	const headingFormatRaw = get("heading-format", "headingformat");
 	const descriptionLengthRaw = get("description-length", "descriptionlength");
+	// The block's list adds to the one in settings rather than replacing it.
+	const hiddenTitles = compileTitlePatterns(
+		[...settings.hiddenTitles, ...toList(get("hide-titles", "hidetitles", "exclude-titles", "excludetitles"))],
+		(pattern) => warnings.push(`Invalid hide pattern "${pattern}"`)
+	);
+
 	const noteTypeRaw = get("note-type", "notetype");
 	const noteFolderRaw = get("note-folder", "notefolder");
 
@@ -370,6 +421,7 @@ export function parseQuery(source: string, settings: GCalSettings): ParsedQuery 
 			search: searchRaw === undefined ? undefined : String(searchRaw),
 			titleMatch: titleMatchRaw === undefined ? undefined : toRegex(titleMatchRaw, "title-match"),
 			titleExclude: titleExcludeRaw === undefined ? undefined : toRegex(titleExcludeRaw, "title-exclude"),
+			hiddenTitles,
 			allDay: has("all-day", "allday") ? toEnum(get("all-day", "allday"), ALL_DAY_MODES, "all-day") : "include",
 			hideDeclined: has("declined") ? !toBool(get("declined"), "declined") : settings.hideDeclined,
 			hideCancelled: has("cancelled", "canceled") ? !toBool(get("cancelled", "canceled"), "cancelled") : true,

@@ -51,6 +51,8 @@ export interface GCalSettings {
 	dateHeadingFormat: string;
 	tableDateFormat: string;
 	hideDeclined: boolean;
+	/** Title patterns hidden in every block. Globs, or /regex/. */
+	hiddenTitles: string[];
 
 	/** Seconds an API response stays reusable. */
 	cacheTtl: number;
@@ -85,6 +87,7 @@ export const DEFAULT_SETTINGS: GCalSettings = {
 	dateHeadingFormat: "dddd D MMMM",
 	tableDateFormat: "ddd D MMM",
 	hideDeclined: true,
+	hiddenTitles: [],
 
 	cacheTtl: 300,
 	autoRefresh: 0,
@@ -124,6 +127,7 @@ export function migrateSettings(raw: unknown): GCalSettings {
 	settings.knownCalendars = Array.isArray(settings.knownCalendars) ? [...settings.knownCalendars] : [];
 	settings.defaultCalendars = Array.isArray(settings.defaultCalendars) ? [...settings.defaultCalendars] : [];
 	settings.noteTypes = Array.isArray(settings.noteTypes) ? [...settings.noteTypes] : [];
+	settings.hiddenTitles = Array.isArray(settings.hiddenTitles) ? [...settings.hiddenTitles] : [];
 
 	const legacyTokens = stored.tokens;
 	if (legacyTokens && settings.accounts.length === 0) {
@@ -150,3 +154,8 @@ export function migrateSettings(raw: unknown): GCalSettings {
 
 	return settings;
 }
+
+/** Prefixes for the settings-tab control keys of repeated rows. */
+export const CALENDAR_KEY_PREFIX = "calendar:";
+export const ACCOUNT_KEY_PREFIX = "account:";
+export const NOTE_TYPE_KEY_PREFIX = "noteType:";

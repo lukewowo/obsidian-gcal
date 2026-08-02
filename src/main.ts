@@ -5,9 +5,15 @@ import {
 	Platform,
 	Plugin,
 	PluginSettingTab,
-	Setting,
 	moment,
 	type MarkdownPostProcessorContext,
+	type Setting,
+	type SettingDefinition,
+	type SettingDefinitionGroup,
+	type SettingDefinitionItem,
+	type SettingDefinitionList,
+	type SettingDefinitionPage,
+	type TFile,
 } from "obsidian";
 import type { Moment } from "moment";
 import {
@@ -37,7 +43,10 @@ import {
 	templaterAvailable,
 } from "./notes";
 import {
+	ACCOUNT_KEY_PREFIX,
+	CALENDAR_KEY_PREFIX,
 	DEFAULT_SETTINGS,
+	NOTE_TYPE_KEY_PREFIX,
 	migrateSettings,
 	type AccountSettings,
 	type GCalSettings,
@@ -518,6 +527,7 @@ function keepEvent(event: CalEvent, query: GCalQuery): boolean {
 	if (query.allDay === "only" && !event.allDay) return false;
 	if (query.titleMatch && !query.titleMatch.test(event.title)) return false;
 	if (query.titleExclude && query.titleExclude.test(event.title)) return false;
+	if (query.hiddenTitles.some((pattern) => pattern.test(event.title))) return false;
 	return true;
 }
 
@@ -668,667 +678,601 @@ class GCalBlock extends MarkdownRenderChild {
 		this.registerInterval(this.refreshTimer);
 	}
 }
-
+/**
+ * Settings are declared rather than rendered, which is what puts them in
+ * Obsidian's settings search. The base class owns the DOM; this class only
+ * describes the shape and bridges control keys to `GCalSettings`.
+ *
+ * Keys are either a plain field name on the settings object, or a prefixed
+ * composite for the repeated rows: `calendar:<calendarKey>`,
+ * `account:<accountId>:<field>`, `noteType:<typeId>:<field>`.
+ */
 class GCalSettingTab extends PluginSettingTab {
 	constructor(private readonly plugin: GoogleCalendarAgendaPlugin) {
 		super(plugin.app, plugin);
 	}
 
-	display(): void {
-		const { containerEl } = this;
-		containerEl.empty();
+	// --- Key routing ------------------------------------------------------
 
-		this.renderOAuthClient(containerEl);
-		this.renderAccounts(containerEl);
-		this.renderCalendars(containerEl);
-		this.renderDefaults(containerEl);
-		this.renderMeetingNotes(containerEl);
-		this.renderPerformance(containerEl);
+	/** Splits `prefix:<id>:<field>`. Ids may contain colons; field names may not. */
+	private static split(key: string, prefix: string): { id: string; field: string } | null {
+		if (!key.startsWith(prefix)) return null;
+		const rest = key.slice(prefix.length);
+		const cut = rest.lastIndexOf(":");
+		return cut < 0 ? { id: rest, field: "" } : { id: rest.slice(0, cut), field: rest.slice(cut + 1) };
 	}
 
-	/**
-	 * Numeric field that never shows a value different from the one stored.
-	 * Typing is left alone until blur, when the box is redrawn from what was
-	 * actually saved — so a clamped or rejected entry is visible, not silent.
-	 */
-	private addNumberField(
-		setting: Setting,
-		read: () => number,
-		clamp: (value: number) => number,
-		write: (value: number) => Promise<void>
-	): void {
-		setting.addText((text) => {
-			text.inputEl.type = "number";
-			text.setValue(String(read()));
+	private account(id: string): AccountSettings | undefined {
+		return this.plugin.settings.accounts.find((entry) => entry.id === id);
+	}
 
-			text.onChange(async (raw) => {
-				const parsed = Number(raw.trim());
-				// Mid-edit rubbish is ignored rather than coerced; blur reconciles it.
-				if (raw.trim() === "" || !Number.isFinite(parsed)) return;
-				await write(clamp(parsed));
-			});
+	private noteType(id: string): NoteType | undefined {
+		return this.plugin.settings.noteTypes.find((entry) => entry.id === id);
+	}
 
-			// Block body so the handler returns void; an expression body returns the
-			// component, which trips no-misused-promises where types resolve loosely.
-			text.inputEl.addEventListener("blur", () => {
-				text.setValue(String(read()));
+	getControlValue(key: string): unknown {
+		const settings = this.plugin.settings;
+
+		if (key === "hiddenTitles") return settings.hiddenTitles.join("\n");
+
+		if (key.startsWith(CALENDAR_KEY_PREFIX)) {
+			return settings.defaultCalendars.includes(key.slice(CALENDAR_KEY_PREFIX.length));
+		}
+
+		const account = GCalSettingTab.split(key, ACCOUNT_KEY_PREFIX);
+		if (account) {
+			const entry = this.account(account.id);
+			if (!entry) return "";
+			if (account.field === "label") return entry.label;
+			if (account.field === "clientId") return entry.clientId ?? "";
+			return entry.clientSecret ?? "";
+		}
+
+		const type = GCalSettingTab.split(key, NOTE_TYPE_KEY_PREFIX);
+		if (type) {
+			const entry = this.noteType(type.id);
+			if (!entry) return "";
+			switch (type.field) {
+				case "name":
+					return entry.name;
+				case "mode":
+					return entry.mode;
+				case "templatePath":
+					return entry.templatePath ?? "";
+				case "quickAddChoice":
+					return entry.quickAddChoice ?? "";
+				case "folder":
+					return entry.folder ?? "";
+				case "filenameFormat":
+					return entry.filenameFormat ?? "";
+				case "openAfterCreate":
+					return entry.openAfterCreate;
+				default:
+					return "";
+			}
+		}
+
+		return (settings as unknown as Record<string, unknown>)[key];
+	}
+
+	async setControlValue(key: string, value: unknown): Promise<void> {
+		const settings = this.plugin.settings;
+		let rerenderBlocks = true;
+
+		if (key === "hiddenTitles") {
+			settings.hiddenTitles = String(value)
+				.split("\n")
+				.map((line) => line.trim())
+				.filter(Boolean);
+		} else if (key.startsWith(CALENDAR_KEY_PREFIX)) {
+			const calendarKey = key.slice(CALENDAR_KEY_PREFIX.length);
+			const selected = new Set(settings.defaultCalendars);
+			if (value) selected.add(calendarKey);
+			else selected.delete(calendarKey);
+			settings.defaultCalendars = [...selected];
+		} else {
+			const account = GCalSettingTab.split(key, ACCOUNT_KEY_PREFIX);
+			const type = GCalSettingTab.split(key, NOTE_TYPE_KEY_PREFIX);
+
+			if (account) {
+				const entry = this.account(account.id);
+				if (!entry) return;
+				const text = String(value).trim();
+				if (account.field === "label") {
+					await this.plugin.renameAccount(entry.id, text || entry.id);
+					return;
+				}
+				if (account.field === "clientId") entry.clientId = text || undefined;
+				else entry.clientSecret = text || undefined;
+				rerenderBlocks = false;
+			} else if (type) {
+				const entry = this.noteType(type.id);
+				if (!entry) return;
+				const text = typeof value === "string" ? value.trim() : "";
+				switch (type.field) {
+					case "name":
+						entry.name = text || entry.id;
+						break;
+					case "mode":
+						entry.mode = text as NoteType["mode"];
+						break;
+					case "templatePath":
+						entry.templatePath = text || undefined;
+						break;
+					case "quickAddChoice":
+						entry.quickAddChoice = text || undefined;
+						break;
+					case "folder":
+						entry.folder = text || undefined;
+						break;
+					case "filenameFormat":
+						entry.filenameFormat = text || undefined;
+						break;
+					case "openAfterCreate":
+						entry.openAfterCreate = Boolean(value);
+						break;
+				}
+			} else {
+				(settings as unknown as Record<string, unknown>)[key] = value;
+			}
+		}
+
+		await this.plugin.saveSettings();
+		if (rerenderBlocks) this.plugin.refreshAllBlocks();
+		// `visible` and `disabled` predicates are re-evaluated on update, which is
+		// how the mode-specific note-type rows appear and disappear.
+		this.update();
+	}
+
+	// --- Definitions ------------------------------------------------------
+
+	getSettingDefinitions(): SettingDefinitionItem[] {
+		return [
+			this.oauthClientGroup(),
+			this.accountsList(),
+			this.calendarsGroup(),
+			this.defaultsGroup(),
+			this.meetingNotesGroup(),
+			this.noteTypesList(),
+			this.syncingGroup(),
+		];
+	}
+
+	private secretRow(name: string, desc: string, read: () => string, write: (value: string) => Promise<void>): SettingDefinition {
+		// Rendered by hand because there is no masked control type.
+		return {
+			name,
+			desc,
+			render: (setting: Setting) => {
+				setting.addText((text) => {
+					text.inputEl.type = "password";
+					text.inputEl.autocomplete = "off";
+					text.setPlaceholder("GOCSPX-…").setValue(read());
+					text.onChange((value) => {
+						void write(value);
+					});
+				});
+			},
+		};
+	}
+
+	private oauthClientGroup(): SettingDefinitionGroup {
+		const href = "https://console.cloud.google.com/apis/credentials";
+		const intro = createFragment((frag) => {
+			frag.appendText(
+				"Create an OAuth client of type “Desktop app” in a Google Cloud project with the Calendar API enabled. One client can serve every account you add. "
+			);
+			const link = frag.createEl("a", { text: "Open Google Cloud credentials", href });
+			link.addEventListener("click", (mouse) => {
+				mouse.preventDefault();
+				window.open(href, "_blank");
 			});
 		});
+
+		return {
+			type: "group",
+			heading: "OAuth client",
+			items: [
+				{ name: "Setup", desc: intro, aliases: ["google", "cloud", "credentials"] },
+				{
+					name: "Client ID",
+					desc: "Shared by every account unless one overrides it.",
+					control: { type: "text", key: "clientId", placeholder: "xxxxx.apps.googleusercontent.com" },
+				},
+				this.secretRow(
+					"Client secret",
+					"Stored unencrypted in this plugin's data.json, like all Obsidian plugin settings.",
+					() => this.plugin.settings.clientSecret,
+					async (value) => {
+						this.plugin.settings.clientSecret = value;
+						await this.plugin.saveSettings();
+					}
+				),
+				{
+					type: "page",
+					name: "Advanced",
+					desc: "Callback port",
+					items: [
+						{
+							name: "Callback port",
+							desc: "0 lets the OS pick a free port each time, which is right for a Desktop app client. Set a fixed port only if you created a “Web application” client and registered http://127.0.0.1:PORT with it.",
+							control: { type: "number", key: "oauthPort", min: 0, max: 65535, step: 1, defaultValue: 0 },
+						},
+					],
+				},
+			],
+		};
 	}
 
-	private renderMeetingNotes(containerEl: HTMLElement): void {
-		new Setting(containerEl).setName("Meeting notes").setHeading();
+	private accountsList(): SettingDefinitionList {
+		const accounts = this.plugin.settings.accounts;
+		const desktop = Platform.isDesktopApp;
 
+		return {
+			type: "list",
+			heading: "Accounts",
+			emptyState: desktop
+				? "No accounts yet. Fill in the OAuth client above, then add one."
+				: "No accounts yet. Sign in on the desktop app; this device reads what it syncs.",
+			addItem: desktop
+				? {
+						name: "Add account",
+						action: () => {
+							void this.plugin.addAccount().then(
+								() => this.update(),
+								() => this.update()
+							);
+						},
+					}
+				: undefined,
+			onDelete: (index: number) => {
+				const account = accounts[index];
+				if (!account) return;
+				void this.plugin.removeAccount(account.id).then(() => {
+					new Notice(`Removed ${account.label}`);
+					this.update();
+				});
+			},
+			items: accounts.map((account): SettingDefinitionPage => {
+				const calendars = this.plugin.settings.knownCalendars.filter((c) => c.accountId === account.id).length;
+				const connected = Boolean(account.tokens?.refreshToken);
+				return {
+					type: "page",
+					name: account.label,
+					desc: connected ? `${account.id} · ${calendars} calendars` : `${account.id} · not connected`,
+					status: connected ? null : "warning",
+					items: [
+						{
+							name: "Label",
+							desc: "What `accounts:` and `account/calendar` match against in a block.",
+							control: { type: "text", key: `${ACCOUNT_KEY_PREFIX}${account.id}:label` },
+						},
+						{
+							name: connected ? "Reconnect" : "Connect",
+							desc: desktop
+								? "Runs the Google consent flow again for this account."
+								: "Signing in needs the desktop app.",
+							disabled: !desktop,
+							action: () => {
+								void this.plugin.addAccount(account).then(
+									() => this.update(),
+									() => this.update()
+								);
+							},
+						},
+						{
+							name: "Separate OAuth client",
+							desc: "Only needed if a Workspace admin blocks outside apps. Leave empty to use the shared client above.",
+						},
+						{
+							name: "Client ID",
+							control: {
+								type: "text",
+								key: `${ACCOUNT_KEY_PREFIX}${account.id}:clientId`,
+								placeholder: "Falls back to the shared client",
+							},
+						},
+						this.secretRow(
+							"Client secret",
+							"",
+							() => account.clientSecret ?? "",
+							async (value) => {
+								account.clientSecret = value.trim() || undefined;
+								await this.plugin.saveSettings();
+							}
+						),
+					],
+				};
+			}),
+		};
+	}
+
+	private calendarsGroup(): SettingDefinitionGroup {
+		const calendars = this.plugin.settings.knownCalendars;
+
+		const items: SettingDefinition[] = calendars.length
+			? calendars.map((calendar) => ({
+					name: calendar.name,
+					desc: `${calendar.accountLabel} · ${calendar.id}`,
+					aliases: [calendar.accountLabel, calendar.id],
+					control: { type: "toggle" as const, key: `${CALENDAR_KEY_PREFIX}${calendar.key}` },
+				}))
+			: [
+					{
+						name: "No calendars loaded",
+						desc: this.plugin.hasAnyAccount()
+							? "Use the reload button on this section."
+							: "Add an account first.",
+						searchable: false,
+					},
+				];
+
+		return {
+			type: "group",
+			heading: "Calendars",
+			search:
+				calendars.length > 8
+					? {
+							placeholder: "Filter calendars",
+							match: (def, query) =>
+								`${def.name} ${typeof def.desc === "string" ? def.desc : ""}`
+									.toLowerCase()
+									.includes(query.toLowerCase()),
+						}
+					: undefined,
+			extraButtons: [
+				(button) =>
+					button
+						.setIcon("refresh-cw")
+						.setTooltip("Reload the calendar list from Google")
+						.setDisabled(!this.plugin.hasAnyAccount())
+						.onClick(() => {
+							void this.plugin.reloadCalendars().then(
+								({ errors }) => {
+									new Notice(errors.length ? `Updated with errors: ${errors.join("; ")}` : "Calendar list updated");
+									this.update();
+								},
+								(error: unknown) => new Notice(`Google Calendar: ${describeError(error)}`, 10000)
+							);
+						}),
+			],
+			items,
+		};
+	}
+
+	private defaultsGroup(): SettingDefinitionGroup {
+		return {
+			type: "group",
+			heading: "Defaults",
+			items: [
+				{
+					name: "View",
+					desc: "Used when a block omits `view`.",
+					control: {
+						type: "dropdown",
+						key: "defaultView",
+						options: { agenda: "Agenda", list: "List", table: "Table" },
+					},
+				},
+				{
+					name: "Period",
+					desc: "How far ahead to look when a block sets neither `to` nor `period`. For example 7d, 2w, 1m, or eom.",
+					control: {
+						type: "text",
+						key: "defaultPeriod",
+						placeholder: DEFAULT_SETTINGS.defaultPeriod,
+						// A typo here would break every block relying on the default, with
+						// an error naming an option the user never wrote.
+						validate: (value: string) =>
+							isValidPeriod(value) ? undefined : `"${value}" is not a period. Try 7d, 2w, 1m or eom.`,
+					},
+				},
+				{ name: "24-hour time", control: { type: "toggle", key: "use24HourTime" } },
+				{
+					name: "Date heading format",
+					desc: "Moment format for date group headings. Today, Tomorrow and Yesterday are always named. Blocks override it with `heading-format`.",
+					control: { type: "text", key: "dateHeadingFormat", placeholder: DEFAULT_SETTINGS.dateHeadingFormat },
+				},
+				{
+					name: "Inline date format",
+					desc: "Moment format for the `date` field in list and table views. Blocks override it with `date-format`.",
+					control: { type: "text", key: "tableDateFormat", placeholder: DEFAULT_SETTINGS.tableDateFormat },
+				},
+				{ name: "Hide declined events", control: { type: "toggle", key: "hideDeclined" } },
+				{
+					name: "Hidden events",
+					desc: "One title pattern per line, hidden in every block. `EOD` matches that title exactly, `Start of *` matches a prefix, `*EOD*` matches anywhere, and `/regex/` is a regular expression. Blocks add more with `hide-titles`.",
+					aliases: ["filter", "exclude", "ignore", "mute"],
+					control: {
+						type: "textarea",
+						key: "hiddenTitles",
+						placeholder: "EOD\nStart of *\n*lunch*",
+					},
+				},
+				{
+					name: "Description length",
+					desc: "Characters shown before an event description is truncated. 0 hides descriptions. Only applies where `show: description` is set.",
+					control: { type: "number", key: "descriptionLength", min: 0, step: 10 },
+				},
+			],
+		};
+	}
+
+	private meetingNotesGroup(): SettingDefinitionGroup {
 		const hasTemplater = templaterAvailable(this.app);
 		const hasQuickAdd = quickAddAvailable(this.app);
-		containerEl.createDiv({
-			cls: "setting-item-description gcal-settings-intro",
-			text:
-				`Detected: Templater ${hasTemplater ? "yes" : "no"} · QuickAdd ${hasQuickAdd ? "yes" : "no"}. ` +
-				"Placeholders such as {{title}} and {{date:YYYY-MM-DD}} work in folders, filenames and templates.",
-		});
-
-		new Setting(containerEl)
-			.setName("Show the note link by default")
-			.setDesc("Adds the Create/Open meeting note link to every block. Blocks can override with `meeting-note`.")
-			.addToggle((toggle) =>
-				toggle.setValue(this.plugin.settings.showMeetingNoteLink).onChange(async (value) => {
-					this.plugin.settings.showMeetingNoteLink = value;
-					await this.plugin.saveSettings();
-					this.plugin.refreshAllBlocks();
-				})
-			);
-
-		new Setting(containerEl)
-			.setName("Default folder")
-			.setDesc("Where new meeting notes go. Leave empty for the vault root. Placeholders are allowed.")
-			.addText((text) =>
-				text
-					.setPlaceholder("Meetings")
-					.setValue(this.plugin.settings.noteFolder)
-					.onChange(async (value) => {
-						this.plugin.settings.noteFolder = value.trim();
-						await this.plugin.saveSettings();
-					})
-			);
-
-		new Setting(containerEl)
-			.setName("Default filename")
-			.addText((text) =>
-				text
-					.setPlaceholder(DEFAULT_SETTINGS.noteFilenameFormat)
-					.setValue(this.plugin.settings.noteFilenameFormat)
-					.onChange(async (value) => {
-						this.plugin.settings.noteFilenameFormat = value.trim() || DEFAULT_SETTINGS.noteFilenameFormat;
-						await this.plugin.saveSettings();
-					})
-			);
-
-		new Setting(containerEl)
-			.setName("Run Templater on new notes")
-			.setDesc("Processes <% %> commands after a note is created. Applies to the built-in mode only.")
-			.setDisabled(!hasTemplater)
-			.addToggle((toggle) =>
-				// Setting.setDisabled only greys the row; the control needs disabling too.
-				toggle.setDisabled(!hasTemplater).setValue(this.plugin.settings.runTemplaterOnCreate).onChange(async (value) => {
-					this.plugin.settings.runTemplaterOnCreate = value;
-					await this.plugin.saveSettings();
-				})
-			);
-
 		const types = this.plugin.settings.noteTypes;
-		new Setting(containerEl)
-			.setName("Note types")
-			.setDesc(
-				types.length
-					? "Blocks pick one with `note-type`. The default is used when they do not."
-					: "None yet — the built-in template is used. Add a type to use Templater or QuickAdd."
-			)
-			.addDropdown((dropdown) => {
-				dropdown.addOption("", types.length ? "First in the list" : "Built-in");
-				for (const type of types) dropdown.addOption(type.id, type.name);
-				dropdown.setValue(this.plugin.settings.defaultNoteType).onChange(async (value) => {
-					this.plugin.settings.defaultNoteType = value;
-					await this.plugin.saveSettings();
-				});
-			})
-			.addButton((button) =>
-				button.setButtonText("Add type").onClick(async () => {
+
+		const typeOptions: Record<string, string> = { "": types.length ? "First in the list" : "Built-in" };
+		for (const type of types) typeOptions[type.id] = type.name;
+
+		return {
+			type: "group",
+			heading: "Meeting notes",
+			items: [
+				{
+					name: "Detected plugins",
+					desc: `Templater ${hasTemplater ? "yes" : "no"} · QuickAdd ${hasQuickAdd ? "yes" : "no"}. Placeholders such as {{title}} and {{date:YYYY-MM-DD}} work in folders, filenames and templates.`,
+					searchable: false,
+				},
+				{
+					name: "Show the note link by default",
+					desc: "Adds the Create/Open meeting note link to every block. Blocks override with `meeting-note`.",
+					control: { type: "toggle", key: "showMeetingNoteLink" },
+				},
+				{
+					name: "Default folder",
+					desc: "Where new meeting notes go. Leave empty for the vault root. Placeholders are allowed, which is why this is free text rather than a folder picker.",
+					control: { type: "text", key: "noteFolder", placeholder: "Meetings" },
+				},
+				{
+					name: "Default filename",
+					control: { type: "text", key: "noteFilenameFormat", placeholder: DEFAULT_SETTINGS.noteFilenameFormat },
+				},
+				{
+					name: "Run Templater on new notes",
+					desc: "Processes <% %> commands after a note is created. Applies to the built-in mode only.",
+					control: { type: "toggle", key: "runTemplaterOnCreate", disabled: !hasTemplater },
+				},
+				{
+					name: "Default note type",
+					desc: "Used when a block does not name one with `note-type`.",
+					control: { type: "dropdown", key: "defaultNoteType", options: typeOptions },
+				},
+			],
+		};
+	}
+
+	private noteTypesList(): SettingDefinitionList {
+		const types = this.plugin.settings.noteTypes;
+		const choices = quickAddChoices(this.app);
+
+		return {
+			type: "list",
+			heading: "Note types",
+			emptyState: "None yet — the built-in template is used. Add a type to use Templater or QuickAdd.",
+			addItem: {
+				name: "Add note type",
+				action: () => {
 					this.plugin.settings.noteTypes.push({
 						id: crypto.randomUUID(),
 						name: `Note type ${this.plugin.settings.noteTypes.length + 1}`,
 						mode: "builtin",
 						openAfterCreate: true,
 					});
-					await this.plugin.saveSettings();
-					this.display();
-				})
-			);
-
-		for (const type of types) this.renderNoteType(containerEl, type);
-	}
-
-	/** A picker of QuickAdd's own choices, falling back to free text if it cannot read them. */
-	private renderQuickAddChoice(containerEl: HTMLElement, type: NoteType): void {
-		const choices = quickAddChoices(this.app);
-		const setting = new Setting(containerEl)
-			.setName("QuickAdd choice")
-			.setDesc("Event data arrives as {{VALUE:title}}, {{VALUE:date}}, and so on.");
-
-		if (choices.length === 0) {
-			setting.setDesc(
-				quickAddAvailable(this.app)
-					? "QuickAdd has no choices configured yet. Add one in QuickAdd, then reopen this tab."
-					: "QuickAdd is not installed or not enabled — the name is stored, but nothing will run."
-			);
-			setting.addText((text) =>
-				text
-					.setPlaceholder("Meeting note")
-					.setValue(type.quickAddChoice ?? "")
-					.onChange(async (value) => {
-						type.quickAddChoice = value.trim() || undefined;
-						await this.plugin.saveSettings();
-					})
-			);
-			return;
-		}
-
-		setting.addDropdown((dropdown) => {
-			dropdown.addOption("", "Select a choice…");
-			for (const choice of choices) dropdown.addOption(choice.name, `${choice.label} · ${choice.type}`);
-
-			// A choice renamed or deleted inside QuickAdd must stay visible, or opening
-			// this tab would silently discard it.
-			const current = type.quickAddChoice;
-			if (current && !choices.some((choice) => choice.name === current)) {
-				dropdown.addOption(current, `${current} · missing from QuickAdd`);
-			}
-
-			dropdown.setValue(current ?? "").onChange(async (value) => {
-				type.quickAddChoice = value || undefined;
-				await this.plugin.saveSettings();
-			});
-		});
-
-		setting.addExtraButton((button) =>
-			button
-				.setIcon("refresh-cw")
-				.setTooltip("Reload the list from QuickAdd")
-				.onClick(() => this.display())
-		);
-	}
-
-	/** Free-text path plus a picker over the configured template folders. */
-	private renderTemplatePath(containerEl: HTMLElement, type: NoteType): void {
-		const candidates = templateCandidates(this.app);
-		const setting = new Setting(containerEl)
-			.setName("Template file")
-			.setDesc(
-				type.mode === "templater"
-					? "Path to the Templater template. Templater owns the processing."
-					: "Optional. A template whose {{placeholders}} get filled in. Leave empty for the built-in body."
-			);
-
-		let field: import("obsidian").TextComponent | null = null;
-		setting.addText((text) => {
-			field = text;
-			text
-				.setPlaceholder("Templates/Meeting.md")
-				.setValue(type.templatePath ?? "")
-				.onChange(async (value) => {
-					type.templatePath = value.trim() || undefined;
-					await this.plugin.saveSettings();
+					void this.plugin.saveSettings().then(() => this.update());
+				},
+			},
+			onDelete: (index: number) => {
+				const type = types[index];
+				if (!type) return;
+				this.plugin.settings.noteTypes = types.filter((entry) => entry.id !== type.id);
+				if (this.plugin.settings.defaultNoteType === type.id) this.plugin.settings.defaultNoteType = "";
+				void this.plugin.saveSettings().then(() => {
+					this.plugin.refreshAllBlocks();
+					this.update();
 				});
-		});
+			},
+			items: types.map((type): SettingDefinitionPage => {
+				const key = (field: string) => `${NOTE_TYPE_KEY_PREFIX}${type.id}:${field}`;
+				const isQuickAdd = () => this.noteType(type.id)?.mode === "quickadd";
+				const usesTemplate = () => this.noteType(type.id)?.mode !== "quickadd";
 
-		if (candidates.length === 0) return;
+				const choiceOptions: Record<string, string> = { "": "Select a choice…" };
+				for (const choice of choices) choiceOptions[choice.name] = `${choice.label} · ${choice.type}`;
+				// A choice renamed or deleted in QuickAdd must stay selectable, or opening
+				// this page would silently discard it.
+				if (type.quickAddChoice && !choices.some((c) => c.name === type.quickAddChoice)) {
+					choiceOptions[type.quickAddChoice] = `${type.quickAddChoice} · missing from QuickAdd`;
+				}
 
-		// With one template folder the prefix is noise; with several it is the only
-		// thing telling two same-named templates apart.
-		const folders = new Set(candidates.map((path) => path.slice(0, path.lastIndexOf("/"))));
-		const labelFor = (path: string) => (folders.size > 1 ? path : (path.split("/").pop() ?? path));
-
-		setting.addDropdown((dropdown) => {
-			dropdown.addOption("", "Pick…");
-			for (const path of candidates) dropdown.addOption(path, labelFor(path));
-			dropdown.setValue("").onChange(async (value) => {
-				if (!value) return;
-				type.templatePath = value;
-				field?.setValue(value);
-				dropdown.setValue("");
-				await this.plugin.saveSettings();
-			});
-		});
+				return {
+					type: "page",
+					name: type.name,
+					desc: `${type.mode}${type.folder ? ` · ${type.folder}` : ""}`,
+					displayValue: type.mode,
+					items: [
+						{
+							name: "Name",
+							desc: "What `note-type` matches against in a block.",
+							control: { type: "text", key: key("name") },
+						},
+						{
+							name: "Mode",
+							control: {
+								type: "dropdown",
+								key: key("mode"),
+								options: {
+									builtin: "Built-in (template file, optional Templater pass)",
+									templater: "Templater — create from template",
+									quickadd: "QuickAdd — run a choice",
+								},
+							},
+						},
+						{
+							name: "QuickAdd choice",
+							desc: choices.length
+								? "Event data arrives as {{VALUE:title}}, {{VALUE:date}}, and so on."
+								: "QuickAdd has no choices configured, or is not enabled.",
+							visible: isQuickAdd,
+							control: { type: "dropdown", key: key("quickAddChoice"), options: choiceOptions },
+						},
+						{
+							name: "Template file",
+							desc: "Optional for the built-in mode; required for Templater. Its {{placeholders}} are filled in by the built-in mode only.",
+							visible: usesTemplate,
+							control: {
+								type: "file",
+								key: key("templatePath"),
+								placeholder: "Templates/Meeting.md",
+								filter: (file: TFile) => file.extension === "md",
+							},
+						},
+						{
+							name: "Folder",
+							desc: "Overrides the default folder for this type. Ignored in QuickAdd mode, which owns its own naming.",
+							control: { type: "text", key: key("folder"), placeholder: this.plugin.settings.noteFolder || "vault root" },
+						},
+						{
+							name: "Filename",
+							desc: "Overrides the default filename format for this type.",
+							control: {
+								type: "text",
+								key: key("filenameFormat"),
+								placeholder: this.plugin.settings.noteFilenameFormat,
+							},
+						},
+						{ name: "Open after creating", control: { type: "toggle", key: key("openAfterCreate") } },
+					],
+				};
+			}),
+		};
 	}
 
-	private renderNoteType(containerEl: HTMLElement, type: NoteType): void {
-		const details = containerEl.createEl("details", { cls: "gcal-account-advanced gcal-note-type" });
-		details.createEl("summary", { text: `${type.name} — ${type.mode}` });
-
-		new Setting(details)
-			.setName("Name")
-			.setDesc("What `note-type` matches against.")
-			.addText((text) =>
-				text.setValue(type.name).onChange(async (value) => {
-					type.name = value.trim() || type.id;
-					await this.plugin.saveSettings();
-					this.plugin.refreshAllBlocks();
-				})
-			);
-
-		new Setting(details)
-			.setName("Mode")
-			.addDropdown((dropdown) =>
-				dropdown
-					.addOptions({
-						builtin: "Built-in (template file, optional Templater pass)",
-						templater: "Templater — create from template",
-						quickadd: "QuickAdd — run a choice",
-					})
-					.setValue(type.mode)
-					.onChange(async (value) => {
-						type.mode = value as NoteType["mode"];
-						await this.plugin.saveSettings();
-						this.display();
-					})
-			);
-
-		if (type.mode === "quickadd") {
-			this.renderQuickAddChoice(details, type);
-		} else {
-			this.renderTemplatePath(details, type);
-		}
-
-		new Setting(details)
-			.setName("Folder")
-			.setDesc("Overrides the default folder for this type.")
-			.addText((text) =>
-				text
-					.setPlaceholder(this.plugin.settings.noteFolder || "vault root")
-					.setValue(type.folder ?? "")
-					.onChange(async (value) => {
-						type.folder = value.trim() || undefined;
-						await this.plugin.saveSettings();
-					})
-			);
-
-		new Setting(details)
-			.setName("Filename")
-			.setDesc("Overrides the default filename format for this type.")
-			.addText((text) =>
-				text
-					.setPlaceholder(this.plugin.settings.noteFilenameFormat)
-					.setValue(type.filenameFormat ?? "")
-					.onChange(async (value) => {
-						type.filenameFormat = value.trim() || undefined;
-						await this.plugin.saveSettings();
-					})
-			);
-
-		new Setting(details)
-			.setName("Open after creating")
-			.addToggle((toggle) =>
-				toggle.setValue(type.openAfterCreate).onChange(async (value) => {
-					type.openAfterCreate = value;
-					await this.plugin.saveSettings();
-				})
-			);
-
-		new Setting(details).addButton((button) =>
-			button
-				.setButtonText("Remove this type")
-				.setWarning()
-				.onClick(async () => {
-					this.plugin.settings.noteTypes = this.plugin.settings.noteTypes.filter((entry) => entry.id !== type.id);
-					if (this.plugin.settings.defaultNoteType === type.id) this.plugin.settings.defaultNoteType = "";
-					await this.plugin.saveSettings();
-					this.plugin.refreshAllBlocks();
-					this.display();
-				})
-		);
-	}
-
-	private renderOAuthClient(containerEl: HTMLElement): void {
-		new Setting(containerEl).setName("OAuth client").setHeading();
-
-		const intro = containerEl.createDiv({ cls: "setting-item-description gcal-settings-intro" });
-		intro.createSpan({
-			text: "Create an OAuth client of type “Desktop app” in a Google Cloud project with the Calendar API enabled. One client can serve every account you add. ",
-		});
-		const href = "https://console.cloud.google.com/apis/credentials";
-		const link = intro.createEl("a", { text: "Open Google Cloud credentials", href });
-		link.addEventListener("click", (mouse) => {
-			mouse.preventDefault();
-			window.open(href, "_blank");
-		});
-
-		new Setting(containerEl).setName("Client ID").addText((text) =>
-			text
-				.setPlaceholder("xxxxx.apps.googleusercontent.com")
-				.setValue(this.plugin.settings.clientId)
-				.onChange(async (value) => {
-					this.plugin.settings.clientId = value;
-					await this.plugin.saveSettings();
-				})
-		);
-
-		new Setting(containerEl).setName("Client secret").addText((text) => {
-			text.inputEl.type = "password";
-			text
-				.setPlaceholder("GOCSPX-…")
-				.setValue(this.plugin.settings.clientSecret)
-				.onChange(async (value) => {
-					this.plugin.settings.clientSecret = value;
-					await this.plugin.saveSettings();
-				});
-		});
-
-		// Only relevant to a "Web application" client, which the setup guide tells
-		// people not to create — so it stays out of the main flow.
-		const advanced = containerEl.createEl("details", { cls: "gcal-account-advanced" });
-		advanced.createEl("summary", { text: "Advanced" });
-		if (this.plugin.settings.oauthPort !== 0) advanced.setAttr("open", "");
-
-		this.addNumberField(
-			new Setting(advanced)
-				.setName("Callback port")
-				.setDesc(
-					"0 lets the OS pick a free port each time, which is right for a Desktop app client. Set a fixed port only if you created a “Web application” client and registered http://127.0.0.1:PORT with it."
-				),
-			() => this.plugin.settings.oauthPort,
-			(value) => (Number.isInteger(value) && value >= 0 && value <= 65535 ? value : 0),
-			async (value) => {
-				this.plugin.settings.oauthPort = value;
-				await this.plugin.saveSettings();
-			}
-		);
-	}
-
-	private renderAccounts(containerEl: HTMLElement): void {
-		new Setting(containerEl)
-			.setName("Accounts")
-			.setDesc("Connect as many Google accounts as you like. Each keeps its own token.")
-			.setHeading()
-			.addButton((button) =>
-				button
-					.setButtonText("Add account")
-					.setCta()
-					.setDisabled(!Platform.isDesktopApp)
-					.setTooltip(Platform.isDesktopApp ? "" : "Sign-in requires the desktop app")
-					.onClick(async () => {
-						button.setDisabled(true);
-						try {
-							await this.plugin.addAccount();
-						} catch {
-							/* addAccount already showed a Notice. */
-						}
-						this.display();
-					})
-			);
-
-		if (this.plugin.settings.accounts.length === 0) {
-			containerEl.createDiv({
-				cls: "setting-item-description",
-				text: "No accounts yet. Fill in the OAuth client above, then use Add account.",
-			});
-			return;
-		}
-
-		for (const account of this.plugin.settings.accounts) {
-			const connected = Boolean(account.tokens?.refreshToken);
-			const calendarCount = this.plugin.settings.knownCalendars.filter(
-				(calendar) => calendar.accountId === account.id
-			).length;
-
-			const setting = new Setting(containerEl)
-				.setName(account.label)
-				.setDesc(
-					[account.id === account.label ? null : account.id, connected ? `${calendarCount} calendars` : "not connected"]
-						.filter(Boolean)
-						.join(" · ")
-				);
-
-			setting.addText((text) =>
-				text
-					.setPlaceholder("Label")
-					.setValue(account.label)
-					.onChange(async (value) => {
-						await this.plugin.renameAccount(account.id, value.trim() || account.id);
-					})
-			);
-
-			setting.addButton((button) =>
-				button
-					.setButtonText(connected ? "Reconnect" : "Connect")
-					.setTooltip("Run the Google consent flow again for this account")
-					.onClick(async () => {
-						button.setDisabled(true);
-						try {
-							await this.plugin.addAccount(account);
-						} catch {
-							/* Notice already shown. */
-						}
-						this.display();
-					})
-			);
-
-			setting.addExtraButton((button) =>
-				button
-					.setIcon("trash-2")
-					.setTooltip("Remove this account")
-					.onClick(async () => {
-						await this.plugin.removeAccount(account.id);
-						new Notice(`Removed ${account.label}`);
-						this.display();
-					})
-			);
-
-			// Workspaces that block outside apps need their own client; everyone else
-			// can ignore this.
-			const advanced = containerEl.createEl("details", { cls: "gcal-account-advanced" });
-			advanced.createEl("summary", { text: "Use a separate OAuth client for this account" });
-			if (account.clientId || account.clientSecret) advanced.setAttr("open", "");
-
-			new Setting(advanced).setName("Client ID").addText((text) =>
-				text
-					.setPlaceholder("Falls back to the shared client")
-					.setValue(account.clientId ?? "")
-					.onChange(async (value) => {
-						account.clientId = value.trim() || undefined;
-						await this.plugin.saveSettings();
-					})
-			);
-
-			new Setting(advanced).setName("Client secret").addText((text) => {
-				text.inputEl.type = "password";
-				text
-					.setPlaceholder("Falls back to the shared client")
-					.setValue(account.clientSecret ?? "")
-					.onChange(async (value) => {
-						account.clientSecret = value.trim() || undefined;
-						await this.plugin.saveSettings();
-					});
-			});
-		}
-	}
-
-	private renderCalendars(containerEl: HTMLElement): void {
-		new Setting(containerEl)
-			.setName("Calendars")
-			.setDesc("Blocks that do not name calendars use the ones enabled here. With none enabled, all calendars are queried.")
-			.setHeading()
-			.addButton((button) =>
-				button
-					.setButtonText("Reload list")
-					.setDisabled(!this.plugin.hasAnyAccount())
-					.onClick(async () => {
-						button.setDisabled(true);
-						try {
-							const { errors } = await this.plugin.reloadCalendars();
-							new Notice(errors.length ? `Calendar list updated with errors: ${errors.join("; ")}` : "Calendar list updated");
-						} catch (error) {
-							new Notice(`Google Calendar: ${describeError(error)}`, 10000);
-						}
-						this.display();
-					})
-			);
-
-		const calendars = this.plugin.settings.knownCalendars;
-		if (calendars.length === 0) {
-			containerEl.createDiv({
-				cls: "setting-item-description",
-				text: this.plugin.hasAnyAccount() ? "No calendars loaded yet — use Reload list." : "Add an account first.",
-			});
-			return;
-		}
-
-		const byAccount = new Map<string, CalendarInfo[]>();
-		for (const calendar of calendars) {
-			const bucket = byAccount.get(calendar.accountId);
-			if (bucket) bucket.push(calendar);
-			else byAccount.set(calendar.accountId, [calendar]);
-		}
-
-		for (const [, group] of byAccount) {
-			containerEl.createDiv({ cls: "gcal-account-heading", text: group[0].accountLabel });
-
-			for (const calendar of group) {
-				const setting = new Setting(containerEl).setName(calendar.name).setDesc(calendar.id);
-				setting.nameEl.prepend(
-					createSpan({ cls: "gcal-dot", attr: { style: `background-color: ${calendar.color}` } })
-				);
-				setting.addToggle((toggle) =>
-					toggle.setValue(this.plugin.settings.defaultCalendars.includes(calendar.key)).onChange(async (value) => {
-						const selected = new Set(this.plugin.settings.defaultCalendars);
-						if (value) selected.add(calendar.key);
-						else selected.delete(calendar.key);
-						this.plugin.settings.defaultCalendars = [...selected];
-						await this.plugin.saveSettings();
-						this.plugin.refreshAllBlocks();
-					})
-				);
-			}
-		}
-	}
-
-	private renderDefaults(containerEl: HTMLElement): void {
-		new Setting(containerEl).setName("Defaults").setHeading();
-
-		new Setting(containerEl)
-			.setName("View")
-			.setDesc("Used when a block omits `view`.")
-			.addDropdown((dropdown) =>
-				dropdown
-					.addOptions({ agenda: "Agenda", list: "List", table: "Table" })
-					.setValue(this.plugin.settings.defaultView)
-					.onChange(async (value) => {
-						this.plugin.settings.defaultView = value as GCalSettings["defaultView"];
-						await this.plugin.saveSettings();
-						this.plugin.refreshAllBlocks();
-					})
-			);
-
-		new Setting(containerEl)
-			.setName("Period")
-			.setDesc("How far ahead to look when a block sets neither `to` nor `period`. For example 7d, 2w, 1m, or eom.")
-			.addText((text) => {
-				text.setValue(this.plugin.settings.defaultPeriod);
-
-				text.onChange(async (value) => {
-					// A typo here would break every block that relies on the default,
-					// with an error naming an option the user never wrote.
-					if (!isValidPeriod(value)) return;
-					this.plugin.settings.defaultPeriod = value.trim();
-					await this.plugin.saveSettings();
-					this.plugin.refreshAllBlocks();
-				});
-
-				text.inputEl.addEventListener("blur", () => {
-					if (isValidPeriod(text.getValue())) return;
-					new Notice(`"${text.getValue()}" is not a period — keeping ${this.plugin.settings.defaultPeriod}`);
-					text.setValue(this.plugin.settings.defaultPeriod);
-				});
-			});
-
-		new Setting(containerEl).setName("24-hour time").addToggle((toggle) =>
-			toggle.setValue(this.plugin.settings.use24HourTime).onChange(async (value) => {
-				this.plugin.settings.use24HourTime = value;
-				await this.plugin.saveSettings();
-				this.plugin.refreshAllBlocks();
-			})
-		);
-
-		new Setting(containerEl)
-			.setName("Date heading format")
-			.setDesc("Moment format for date group headings. Today, Tomorrow and Yesterday are always named. Blocks override it with `heading-format`.")
-			.addText((text) =>
-				text.setValue(this.plugin.settings.dateHeadingFormat).onChange(async (value) => {
-					this.plugin.settings.dateHeadingFormat = value.trim() || DEFAULT_SETTINGS.dateHeadingFormat;
-					await this.plugin.saveSettings();
-					this.plugin.refreshAllBlocks();
-				})
-			);
-
-		new Setting(containerEl)
-			.setName("Inline date format")
-			.setDesc("Moment format for the `date` field in list and table views. Blocks override it with `date-format`.")
-			.addText((text) =>
-				text.setValue(this.plugin.settings.tableDateFormat).onChange(async (value) => {
-					this.plugin.settings.tableDateFormat = value.trim() || DEFAULT_SETTINGS.tableDateFormat;
-					await this.plugin.saveSettings();
-					this.plugin.refreshAllBlocks();
-				})
-			);
-
-		new Setting(containerEl).setName("Hide declined events").addToggle((toggle) =>
-			toggle.setValue(this.plugin.settings.hideDeclined).onChange(async (value) => {
-				this.plugin.settings.hideDeclined = value;
-				await this.plugin.saveSettings();
-				this.plugin.refreshAllBlocks();
-			})
-		);
-
-		this.addNumberField(
-			new Setting(containerEl)
-				.setName("Description length")
-				.setDesc("Characters shown before an event description is truncated. 0 hides descriptions. Only applies where `show: description` is set."),
-			() => this.plugin.settings.descriptionLength,
-			(value) => Math.max(0, Math.floor(value)),
-			async (value) => {
-				this.plugin.settings.descriptionLength = value;
-				await this.plugin.saveSettings();
-				this.plugin.refreshAllBlocks();
-			}
-		);
-	}
-
-	private renderPerformance(containerEl: HTMLElement): void {
-		new Setting(containerEl).setName("Syncing").setHeading();
-
-		this.addNumberField(
-			new Setting(containerEl)
-				.setName("Cache lifetime")
-				.setDesc("Seconds an API response is reused before Google is queried again. 0 re-queries on every render."),
-			() => this.plugin.settings.cacheTtl,
-			(value) => Math.max(0, Math.floor(value)),
-			async (value) => {
-				this.plugin.settings.cacheTtl = value;
-				await this.plugin.saveSettings();
-			}
-		);
-
-		this.addNumberField(
-			new Setting(containerEl)
-				.setName("Auto-refresh")
-				.setDesc("Seconds between automatic refreshes of open blocks. 0 disables it, and anything above 0 is held to a 30 second minimum. Blocks can override with `refresh`."),
-			() => this.plugin.settings.autoRefresh,
-			// Matches the clamp parseQuery applies, so the box cannot promise 5s.
-			(value) => (value <= 0 ? 0 : Math.max(30, Math.floor(value))),
-			async (value) => {
-				this.plugin.settings.autoRefresh = value;
-				await this.plugin.saveSettings();
-				this.plugin.refreshAllBlocks();
-			}
-		);
+	private syncingGroup(): SettingDefinitionGroup {
+		return {
+			type: "group",
+			heading: "Syncing",
+			items: [
+				{
+					name: "Cache lifetime",
+					desc: "Seconds an API response is reused before Google is queried again. 0 re-queries on every render.",
+					control: { type: "number", key: "cacheTtl", min: 0, step: 30 },
+				},
+				{
+					name: "Auto-refresh",
+					desc: "Seconds between automatic refreshes of open blocks. 0 disables it. Blocks override with `refresh`.",
+					control: {
+						type: "number",
+						key: "autoRefresh",
+						min: 0,
+						step: 30,
+						// Mirrors the clamp parseQuery applies, so the field cannot promise 5s.
+						validate: (value: number) =>
+							value === 0 || value >= 30 ? undefined : "Use 0 to disable, or at least 30 seconds.",
+					},
+				},
+			],
+		};
 	}
 }
