@@ -23,6 +23,22 @@ local loopback listener; once an account is connected, reading calendars works o
 
 ---
 
+## Features
+
+- **Flexible date ranges** — `today`, `sow`, `eom`, `+3d`, `2026-09-01`, or a period like `2w`
+- **Agenda, list and table views**, grouped by date, calendar or account
+- **Unlimited Google accounts** via OAuth, filterable per block
+- **Filter** by calendar, account, all-day, declined, or a Google full-text search
+- **Hide noisy events** by exact title, wildcard (`Start of *`) or regular expression
+- **Choose which fields each block shows** — time, location, attendees, description, RSVP and more
+- **Create meeting notes** from any event, with Templater and QuickAdd support
+- **Per-block auto-refresh** intervals
+- **Simple YAML** in a `gcal-events` code block, on any page
+- **Read-only access through your own Google Cloud client** — no third-party server, no telemetry
+- **Works on mobile** once an account is connected on desktop
+
+---
+
 ## What this plugin accesses
 
 - **A Google account is required.** Without one the plugin does nothing.
