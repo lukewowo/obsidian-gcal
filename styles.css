@@ -111,8 +111,9 @@
 	display: flex;
 	flex-wrap: wrap;
 	align-items: center;
-	column-gap: 0.45em;
-	row-gap: 0;
+	/* Shorthand rather than column-gap/row-gap: those longhands belong to the
+	   multi-column spec, which Obsidian's CSS lint flags as partially supported. */
+	gap: 0 0.45em;
 	margin-top: 0.1em;
 }
 

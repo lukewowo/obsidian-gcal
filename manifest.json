@@ -1,10 +1,10 @@
 {
 	"id": "google-calendar-agenda",
 	"name": "Google Calendar Agenda",
-	"version": "0.1.0",
+	"version": "0.1.1",
 	"minAppVersion": "1.4.4",
 	"description": "Query Google Calendar from a code block and render upcoming events as an agenda, list, or table.",
 	"author": "lukewowo",
 	"isDesktopOnly": true,
-	"authorUrl": "https://github.com/lukewowo/obsidian-gcal"
+	"authorUrl": "https://github.com/lukewowo"
 }
