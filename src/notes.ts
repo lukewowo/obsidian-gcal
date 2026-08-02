@@ -277,7 +277,9 @@ export class MeetingNotes {
 		if (this.index) return this.index;
 		const map = new Map<string, string>();
 		for (const file of this.app.vault.getMarkdownFiles()) {
-			const id = this.app.metadataCache.getFileCache(file)?.frontmatter?.[EVENT_ID_KEY];
+			// Obsidian types frontmatter values as `any`. Take it as unknown so the
+			// guard below is what establishes the type, rather than a bare assertion.
+			const id: unknown = this.app.metadataCache.getFileCache(file)?.frontmatter?.[EVENT_ID_KEY];
 			if (typeof id === "string" && id && !map.has(id)) map.set(id, file.path);
 		}
 		this.index = map;
