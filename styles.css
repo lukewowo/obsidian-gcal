@@ -460,3 +460,24 @@
 	font-size: var(--font-ui-small);
 	font-weight: var(--font-medium);
 }
+
+/* --- Consent modal --- */
+
+.gcal-consent-url {
+	margin: 0.6em 0;
+	padding: 0.6em 0.7em;
+	max-height: 8em;
+	overflow-y: auto;
+	overflow-wrap: anywhere;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: var(--radius-s);
+	background: var(--background-secondary);
+	user-select: all;
+}
+
+.gcal-consent-url code {
+	font-size: var(--font-smallest);
+	color: var(--text-muted);
+	background: none;
+	padding: 0;
+}

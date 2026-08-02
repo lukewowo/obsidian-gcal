@@ -1,6 +1,8 @@
 import {
 	MarkdownRenderChild,
+	Modal,
 	Notice,
+	Platform,
 	Plugin,
 	PluginSettingTab,
 	Setting,
@@ -8,7 +10,15 @@ import {
 	type MarkdownPostProcessorContext,
 } from "obsidian";
 import type { Moment } from "moment";
-import { AuthError, GoogleAuth, authorize, revoke, type AuthConfig, type OAuthTokens } from "./auth";
+import {
+	AuthError,
+	GoogleAuth,
+	authorize,
+	revoke,
+	type AuthConfig,
+	type ConsentUi,
+	type OAuthTokens,
+} from "./auth";
 import { GCalClient, describeError } from "./gcal";
 import {
 	QueryError,
@@ -52,6 +62,69 @@ interface AccountRuntime {
 export interface QueryResult {
 	events: CalEvent[];
 	warnings: string[];
+}
+
+/**
+ * Shown while the browser round-trip is in flight. The loopback listener accepts
+ * the redirect from any browser on this machine, so offering the URL is what makes
+ * "sign in as a different account, in a different browser" possible.
+ */
+class ConsentModal extends Modal {
+	private settled = false;
+
+	constructor(
+		app: import("obsidian").App,
+		private readonly url: string,
+		private readonly cancel: () => void
+	) {
+		super(app);
+	}
+
+	onOpen(): void {
+		this.titleEl.setText("Waiting for Google");
+
+		this.contentEl.createEl("p", {
+			text: "Your browser should have opened Google's consent screen. Approve access there and this will close by itself.",
+		});
+		this.contentEl.createEl("p", {
+			cls: "mod-warning",
+			text: "To use a different Google account — or a browser where that account is already signed in — copy this link and paste it there instead. It works from any browser on this computer.",
+		});
+
+		const box = this.contentEl.createDiv({ cls: "gcal-consent-url" });
+		box.createEl("code", { text: this.url });
+
+		const buttons = this.contentEl.createDiv({ cls: "modal-button-container" });
+
+		const copy = buttons.createEl("button", { cls: "mod-cta", text: "Copy link" });
+		copy.addEventListener("click", () => {
+			void navigator.clipboard.writeText(this.url).then(() => {
+				copy.setText("Copied");
+				new Notice("Link copied — paste it into any browser on this computer");
+			});
+		});
+
+		const reopen = buttons.createEl("button", { text: "Open again" });
+		reopen.addEventListener("click", () => {
+			window.open(this.url, "_blank");
+		});
+
+		const abort = buttons.createEl("button", { cls: "mod-warning", text: "Cancel" });
+		abort.addEventListener("click", () => {
+			this.close();
+		});
+	}
+
+	/** Called by the auth flow when it settles, so closing does not double-cancel. */
+	settle(): void {
+		this.settled = true;
+		this.close();
+	}
+
+	onClose(): void {
+		this.contentEl.empty();
+		if (!this.settled) this.cancel();
+	}
 }
 
 export default class GoogleCalendarAgendaPlugin extends Plugin {
@@ -181,6 +254,11 @@ export default class GoogleCalendarAgendaPlugin extends Plugin {
 	 * re-adding the same Google account updates it in place rather than duplicating it.
 	 */
 	async addAccount(existing?: AccountSettings): Promise<void> {
+		if (!Platform.isDesktopApp) {
+			new Notice("Adding an account needs the desktop app. Once connected there, this vault's calendars work on mobile too.", 10000);
+			return;
+		}
+
 		const config = existing
 			? this.configFor(existing)
 			: {
@@ -189,8 +267,17 @@ export default class GoogleCalendarAgendaPlugin extends Plugin {
 					port: this.settings.oauthPort,
 				};
 
+		let modal: ConsentModal | null = null;
+		const ui: ConsentUi = {
+			onPrompt: (url, cancel) => {
+				modal = new ConsentModal(this.app, url, cancel);
+				modal.open();
+			},
+			onSettled: () => modal?.settle(),
+		};
+
 		try {
-			const tokens = await authorize(config);
+			const tokens = await authorize(config, ui);
 			const address = await this.probeAddress(config, tokens);
 			const id = address ?? existing?.id ?? crypto.randomUUID();
 
@@ -504,8 +591,12 @@ class GCalBlock extends MarkdownRenderChild {
 				this.containerEl,
 				"notice",
 				"No Google account connected",
-				"Add your OAuth client details in the plugin settings, then add an account.",
-				{ label: "Add account", onClick: () => void this.plugin.addAccount().catch(() => undefined) }
+				Platform.isDesktopApp
+					? "Add your OAuth client details in the plugin settings, then add an account."
+					: "Connect an account in the desktop app. Once its settings sync to this device, events appear here.",
+				Platform.isDesktopApp
+					? { label: "Add account", onClick: () => void this.plugin.addAccount().catch(() => undefined) }
+					: undefined
 			);
 			return;
 		}
@@ -962,6 +1053,8 @@ class GCalSettingTab extends PluginSettingTab {
 				button
 					.setButtonText("Add account")
 					.setCta()
+					.setDisabled(!Platform.isDesktopApp)
+					.setTooltip(Platform.isDesktopApp ? "" : "Sign-in requires the desktop app")
 					.onClick(async () => {
 						button.setDisabled(true);
 						try {

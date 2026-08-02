@@ -1,5 +1,4 @@
-import { requestUrl } from "obsidian";
-import { createServer } from "http";
+import { Platform, requestUrl } from "obsidian";
 
 // Node's own types are deliberately not imported. Lint and build environments
 // that lack @types/node degrade every `http` value to `any`, which cascades
@@ -28,9 +27,20 @@ interface LoopbackServer {
 	on(event: "error", handler: (error: { message: string }) => void): void;
 }
 
-const createLoopbackServer = createServer as unknown as (
-	handler: (req: LoopbackRequest, res: LoopbackResponse) => void
-) => LoopbackServer;
+/**
+ * Node's `http` is required lazily, not imported. A top-level import executes on
+ * plugin load, which would throw on mobile where the module does not exist —
+ * taking down the whole plugin, including the parts that work fine there.
+ */
+function createLoopbackServer(handler: (req: LoopbackRequest, res: LoopbackResponse) => void): LoopbackServer {
+	if (!Platform.isDesktopApp) {
+		throw new AuthError("Adding an account needs the desktop app; the sign-in flow uses a local listener.");
+	}
+	const http = require("http") as {
+		createServer: (h: (req: LoopbackRequest, res: LoopbackResponse) => void) => LoopbackServer;
+	};
+	return http.createServer(handler);
+}
 
 const AUTH_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth";
 const TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token";
@@ -95,11 +105,24 @@ interface ConsentResult {
 }
 
 /**
+ * Hooks the caller can use to show progress while the browser round-trip runs.
+ * The loopback listener accepts a redirect from *any* browser on this machine,
+ * so handing the URL to the user lets them finish the flow wherever they are
+ * signed in to the account they want.
+ */
+export interface ConsentUi {
+	/** Called once the URL exists. `cancel` aborts the wait and closes the listener. */
+	onPrompt(url: string, cancel: () => void): void;
+	/** Called exactly once when the flow settles, however it settles. */
+	onSettled(): void;
+}
+
+/**
  * Opens Google's consent screen and captures the authorization code on a
  * short-lived loopback listener. Desktop-app OAuth clients accept any
  * `http://127.0.0.1:<port>` redirect, so the port does not need registering.
  */
-function awaitConsent(config: AuthConfig, codeChallenge: string): Promise<ConsentResult> {
+function awaitConsent(config: AuthConfig, codeChallenge: string, ui?: ConsentUi): Promise<ConsentResult> {
 	return new Promise<ConsentResult>((resolve, reject) => {
 		const state = base64url(randomBytes(16));
 		let settled = false;
@@ -114,6 +137,7 @@ function awaitConsent(config: AuthConfig, codeChallenge: string): Promise<Consen
 			// keep the port bound long after we are done with it.
 			server.closeAllConnections?.();
 			server.close();
+			ui?.onSettled();
 			fn();
 		};
 
@@ -169,13 +193,17 @@ function awaitConsent(config: AuthConfig, codeChallenge: string): Promise<Consen
 				response_type: "code",
 				scope: SCOPE,
 				access_type: "offline",
-				prompt: "consent",
+				// select_account forces the chooser, so the browser's default Google
+				// session is not silently used for every account you add.
+				prompt: "select_account consent",
 				include_granted_scopes: "true",
 				state,
 				code_challenge: codeChallenge,
 				code_challenge_method: "S256",
 			});
-			window.open(`${AUTH_ENDPOINT}?${params.toString()}`, "_blank");
+			const authUrl = `${AUTH_ENDPOINT}?${params.toString()}`;
+			window.open(authUrl, "_blank");
+			ui?.onPrompt(authUrl, () => finish(() => reject(new AuthError("Authorization cancelled"))));
 
 			timer = window.setTimeout(
 				() => finish(() => reject(new AuthError("Timed out waiting for the Google consent screen"))),
@@ -220,14 +248,14 @@ async function postForm(url: string, form: Record<string, string>): Promise<Reco
  * without storing them. Callers own persistence, which is what lets a brand-new
  * account be authorised before it exists in settings.
  */
-export async function authorize(config: AuthConfig): Promise<OAuthTokens> {
+export async function authorize(config: AuthConfig, ui?: ConsentUi): Promise<OAuthTokens> {
 	if (!config.clientId || !config.clientSecret) {
 		throw new AuthError("Add your OAuth client ID and client secret in the plugin settings first");
 	}
 
 	const verifier = base64url(randomBytes(32));
 	const challenge = base64url(await sha256(verifier));
-	const { code, redirectUri } = await awaitConsent(config, challenge);
+	const { code, redirectUri } = await awaitConsent(config, challenge, ui);
 
 	const payload = await postForm(TOKEN_ENDPOINT, {
 		code,

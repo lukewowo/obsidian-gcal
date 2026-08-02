@@ -5,6 +5,6 @@
 	"minAppVersion": "1.4.4",
 	"description": "Query Google Calendar from a code block and render upcoming events as an agenda, list, or table.",
 	"author": "lukewowo",
-	"isDesktopOnly": true,
+	"isDesktopOnly": false,
 	"authorUrl": "https://github.com/lukewowo"
 }
