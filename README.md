@@ -13,6 +13,10 @@ show: attendees
 ```
 ````
 
+![A gcal-events code block in the Obsidian editor, setting from, period, view, show, refresh, empty and meeting-note options](docs/block.png)
+
+*…renders as:*
+
 ![An agenda block rendered in Obsidian: a "Tomorrow" heading with two all-day events, Home and Office, each showing links to open the event in Google Calendar and to create a meeting note](docs/agenda.png)
 
 Connect as many Google accounts as you like — personal and work side by side, or filtered apart
@@ -85,6 +89,8 @@ party and your calendar data never leaves your machine.
 6. Click **Add account**. Your browser opens Google's consent screen; approve it and the tab will
    tell you it is done.
 7. Click **Reload list** under *Calendars* and enable the calendars you want blocks to use by default.
+
+![The plugin's settings tab, showing the OAuth client section with Client ID and Client secret fields, and an Accounts list containing three connected Google accounts](docs/settings.png)
 
 The plugin requests `calendar.readonly` only — it can never modify your calendar. Tokens are stored
 in the plugin's `data.json` inside your vault, so treat that vault as you would any credential store.
